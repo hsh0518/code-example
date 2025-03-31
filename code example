@@ -1,1 +1,71 @@
+import os
+import json
+from io import BytesIO
+from PIL import Image
+import torch
+from torchvision import transforms, models
+from flask import Flask, request, jsonify
+
+ 
+app = Flask(__name__)
+
+ 
+transform = transforms.Compose([
+    transforms.Resize((800, 800)),
+    transforms.ToTensor(),
+])
+
+ 
+def load_model(model_path, num_classes):
+    model = models.detection.fasterrcnn_resnet50_fpn(pretrained=False)
+    in_features = model.roi_heads.box_predictor.cls_score.in_features
+    model.roi_heads.box_predictor = models.detection.faster_rcnn.FastRCNNPredictor(in_features, num_classes)
+    model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+    model.eval()
+    return model
+
+ 
+model_path = 'path'
+num_classes = 3  
+model = load_model(model_path, num_classes)
+ 
+field_mapping = {
+    1: "name",
+    2: "date_of_birth",
+    
+}
+
+ 
+def infer(model, image):
+    image_tensor = transform(image).unsqueeze(0)
+    with torch.no_grad():
+        predictions = model(image_tensor)
+    return predictions
+
+ 
+@app.route('/extract', methods=['POST'])
+def extract_info():
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No file selected'}), 400
+    try:
+        image = Image.open(BytesIO(file.read())).convert("RGB")
+        predictions = infer(model, image)
+        results = []
+        for idx, box in enumerate(predictions[0]['boxes']):
+            label_idx = predictions[0]['labels'][idx].item()
+            label = field_mapping.get(label_idx, 'unknown')
+            score = predictions[0]['scores'][idx].item()
+            if score >= 0.5: 
+                box = [round(i, 2) for i in box.tolist()]
+                results.append({'field': label, 'bbox': box, 'confidence': round(score, 2)})
+        return jsonify({'extracted_data': results})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+ 
+if __name__ == '__main__':
+    app.run(debug=True)
 
